@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>VANTÉ Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:20px 0}.tabs .btn.on{background:var(--gold);color:#000}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.stat{border:1px solid var(--line);padding:20px}.stat b{display:block;font:500 2rem var(--serif);color:var(--gold)}
+.o{border:1px solid var(--line);padding:18px;margin-bottom:14px;display:grid;gap:6px}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pl{display:flex;gap:14px;align-items:center;border:1px solid var(--line);padding:10px;margin-bottom:10px}.pl .ph{width:56px;aspect-ratio:1}.pl div:nth-child(2){flex:1}
+.chk{display:flex;gap:16px;margin-top:12px;font-size:.9rem}.chk label{display:flex;gap:6px;margin:0;align-items:center;color:var(--wh)}.chk input{width:auto}
+#login{max-width:380px;margin:12vh auto}</style></head>
+<body><div class="wrap" id="app" style="padding-top:30px;padding-bottom:60px"></div><script type="module">
+import { auth, db, storage, $, money, esc, bottle } from "./firebase.js";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { collection, getDocs, getDoc, doc, setDoc, addDoc, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+const app = $("#app"); let tab = "dash", P = [], O = [], S = { bkash: "", nagad: "", delivery: 100, phone: "" }, edit = null;
+const PAY = ["Pending Verification", "Verified", "Rejected", "Cash on Delivery"], ST = ["Pending", "Confirmed", "Processing", "Shipped", "Delivered", "Cancelled"];
+const toast = t => { const d = $("#msg"); if (d) { d.textContent = t; setTimeout(() => d.textContent = "", 3500); } };
+
+onAuthStateChanged(auth, async u => {
+  if (!u) return loginView();
+  try { if (!(await getDoc(doc(db, "admins", u.uid))).exists()) { await signOut(auth); return loginView("This account is not an admin."); } }
+  catch { await signOut(auth); return loginView("Could not verify admin access."); }
+  await load(); view();
+});
+function loginView(m = "") {
+  app.innerHTML = `<form id="login"><div class="logo" style="margin-bottom:20px">VANTÉ Admin</div><label>Email<input name="e" type="email" required autocomplete="username"></label>
+  <label>Password<input name="p" type="password" required autocomplete="current-password"></label><p class="err" role="alert">${esc(m)}</p><button class="btn" style="width:100%;margin-top:16px">Sign in</button></form>`;
+  $("#login").onsubmit = async e => { e.preventDefault(); try { await signInWithEmailAndPassword(auth, e.target.e.value, e.target.p.value); } catch { $(".err").textContent = "Email or password is incorrect."; } };
+}
+async function load() {
+  const [a, b, c] = await Promise.all([getDocs(collection(db, "products")), getDocs(collection(db, "orders")), getDoc(doc(db, "settings", "store"))]);
+  P = a.docs.map(d => ({ id: d.id, ...d.data() })); O = b.docs.map(d => ({ id: d.id, ...d.data() })).sort((x, y) => (y.createdAt?.seconds || 0) - (x.createdAt?.seconds || 0));
+  if (c.exists()) S = { ...S, ...c.data() };
+}
+function view() {
+  const T = [["dash", "Dashboard"], ["prod", "Products"], ["ord", "Orders"], ["set", "Settings"]];
+  app.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><div class="logo">VANTÉ Admin</div><div><a class="btn ghost sm" href="index.html">View store</a> <button class="btn ghost sm" id="out">Sign out</button></div></div>
+  <div class="tabs">${T.map(([k, n]) => `<button class="btn sm ${tab === k ? "on" : "ghost"}" data-t="${k}">${n}</button>`).join("")}</div><p id="msg" class="note" style="margin:0 0 14px"></p><div id="body"></div>`;
+  $("#out").onclick = () => signOut(auth);
+  document.querySelectorAll("[data-t]").forEach(b => b.onclick = () => { tab = b.dataset.t; edit = null; view(); });
+  ({ dash, prod, ord, set })[tab]();
+}
+function dash() {
+  const sales = O.filter(o => o.status !== "Cancelled" && (o.paymentStatus === "Verified" || (o.paymentStatus === "Cash on Delivery" && o.status === "Delivered"))).reduce((s, o) => s + o.total, 0);
+  $("#body").innerHTML = `<div class="stats">${[["Total products", P.length], ["Total orders", O.length], ["Pending orders", O.filter(o => o.status === "Pending").length],
+    ["Verified payments", O.filter(o => o.paymentStatus === "Verified").length], ["Confirmed sales", money(sales)]].map(([a, b]) => `<div class="stat">${a}<b>${b}</b></div>`).join("")}</div>
+  <p class="sub" style="margin-top:14px">Confirmed sales counts verified payments plus delivered cash-on-delivery orders, excluding cancelled orders.</p>`;
+}
+function prod() {
+  const p = edit || {};
+  $("#body").innerHTML = `<form id="pf" class="o"><h3>${p.id ? "Edit product" : "Add product"}</h3><div class="two">
+  <label>Name<input name="name" required value="${esc(p.name)}"></label><label>Fragrance type<input name="fragrance" required placeholder="Woody, Floral, Oud…" value="${esc(p.fragrance)}"></label>
+  <label>Price (৳)<input name="price" type="number" min="1" required value="${p.price ?? ""}"></label><label>Discount price (৳, optional)<input name="salePrice" type="number" min="0" value="${p.salePrice || ""}"></label>
+  <label>Size<input name="size" required placeholder="100ml" value="${esc(p.size)}"></label><label>Stock<input name="stock" type="number" min="0" required value="${p.stock ?? ""}"></label></div>
+  <label>Short description<textarea name="description" rows="2" required>${esc(p.description)}</textarea></label>
+  <label>Image (JPG/PNG/WebP, under 2 MB)<input name="img" type="file" accept="image/*"></label>
+  <div class="chk"><label><input type="checkbox" name="featured" ${p.featured ? "checked" : ""}>Featured on homepage</label><label><input type="checkbox" name="bestseller" ${p.bestseller ? "checked" : ""}>Best seller</label></div>
+  <div class="row"><button class="btn sm">${p.id ? "Save changes" : "Add product"}</button>${p.id ? `<button type="button" class="btn ghost sm" id="cx">Cancel</button>` : ""}</div></form>
+  ${P.length ? "" : `<button class="btn ghost sm" id="demo">Load 4 demo products</button> <span class="sub">Editable sample data, flagged as demo.</span>`}
+  <h3 style="margin:24px 0 12px">All products</h3>${P.map(x => `<div class="pl"><div class="ph">${x.image ? `<img src="${esc(x.image)}" alt="">` : bottle}</div>
+  <div><b>${esc(x.name)}</b>${x.demo ? ` <span class="badge">demo</span>` : ""}<br><small>${money(x.price)}${x.salePrice ? ` → ${money(x.salePrice)}` : ""} · ${esc(x.size)} · stock ${x.stock}${x.featured ? " · featured" : ""}${x.bestseller ? " · best seller" : ""}</small></div>
+  <button class="btn ghost sm" data-e="${x.id}">Edit</button><button class="btn ghost sm" data-d="${x.id}">Delete</button></div>`).join("") || `<p class="empty">No products yet.</p>`}`;
+  $("#pf").onsubmit = async e => {
+    e.preventDefault(); const f = e.target, v = new FormData(f), b = f.querySelector(".btn"); b.disabled = true;
+    const d = { name: v.get("name").trim(), fragrance: v.get("fragrance").trim(), price: +v.get("price"), salePrice: +v.get("salePrice") || 0, size: v.get("size").trim(), stock: +v.get("stock"), description: v.get("description").trim(), featured: !!v.get("featured"), bestseller: !!v.get("bestseller") };
+    try {
+      const file = f.img.files[0];
+      if (file) { if (file.size > 2e6) throw new Error("Image must be under 2 MB."); const r = ref(storage, `products/${Date.now()}-${file.name.replace(/[^\w.]/g, "_")}`); await uploadBytes(r, file); d.image = await getDownloadURL(r); }
+      if (p.id) await updateDoc(doc(db, "products", p.id), d); else await addDoc(collection(db, "products"), { ...d, image: d.image || "", createdAt: serverTimestamp() });
+      await load(); edit = null; view(); toast("Product saved.");
+    } catch (x) { b.disabled = false; toast(x.message || "Could not save the product."); }
+  };
+  $("#cx") && ($("#cx").onclick = () => { edit = null; prod(); });
+  $("#demo") && ($("#demo").onclick = async () => {
+    const demo = [["Noir Absolu", "Oud · Amber", 4500, 3800, "50ml"], ["Rose Éternelle", "Floral", 3800, 0, "50ml"], ["Santal Blanc", "Woody", 5200, 0, "100ml"], ["Citrus Nuit", "Fresh", 3200, 2800, "100ml"]];
+    for (const [i, x] of demo.entries()) await addDoc(collection(db, "products"), { name: x[0], fragrance: x[1], price: x[2], salePrice: x[3], size: x[4], stock: 10, description: "Demo product. Edit or delete this in the admin panel.", image: "", featured: true, bestseller: i < 2, demo: true, createdAt: serverTimestamp() });
+    await load(); view();
+  });
+  document.querySelectorAll("[data-e]").forEach(b => b.onclick = () => { edit = P.find(x => x.id === b.dataset.e); prod(); scrollTo(0, 0); });
+  document.querySelectorAll("[data-d]").forEach(b => b.onclick = async () => { if (confirm("Delete this product? This cannot be undone.")) { await deleteDoc(doc(db, "products", b.dataset.d)); await load(); view(); } });
+}
+function ord() {
+  $("#body").innerHTML = O.map(o => `<div class="o"><div style="display:flex;justify-content:space-between;flex-wrap:wrap"><b>${esc(o.orderId || o.id)}</b><span>${money(o.total)}</span></div>
+  <div>${esc(o.name)} · ${esc(o.phone)}${o.email ? " · " + esc(o.email) : ""}<br><small>${esc(o.address)}, ${esc(o.district)}</small></div>
+  <div>${(o.items || []).map(i => `${esc(i.name)} (${esc(i.size)}) × ${i.qty}`).join(", ")}<br><small>Subtotal ${money(o.subtotal)} + delivery ${money(o.delivery)}</small></div>
+  <div><span class="badge">${esc(o.method)}</span>${o.txnId ? ` Txn ID: <b>${esc(o.txnId)}</b> · Sender: ${esc(o.senderPhone)}` : ""}</div>
+  <div class="two"><label>Payment status<select data-p="${o.id}">${PAY.map(s => `<option ${s === o.paymentStatus ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+  <label>Order status<select data-s="${o.id}">${ST.map(s => `<option ${s === o.status ? "selected" : ""}>${s}</option>`).join("")}</select></label></div>
+  <div class="row" style="max-width:260px"><button class="btn sm" data-v="${o.id}">Verify payment</button><button class="btn ghost sm" data-r="${o.id}">Reject</button></div></div>`).join("") || `<p class="empty">No orders yet.</p>`;
+  const up = async (id, d) => { try { await updateDoc(doc(db, "orders", id), d); await load(); ord(); toast("Order updated."); } catch { toast("Update failed."); } };
+  document.querySelectorAll("[data-p]").forEach(s => s.onchange = () => up(s.dataset.p, { paymentStatus: s.value }));
+  document.querySelectorAll("[data-s]").forEach(s => s.onchange = () => up(s.dataset.s, { status: s.value }));
+  document.querySelectorAll("[data-v]").forEach(b => b.onclick = () => up(b.dataset.v, { paymentStatus: "Verified" }));
+  document.querySelectorAll("[data-r]").forEach(b => b.onclick = () => up(b.dataset.r, { paymentStatus: "Rejected" }));
+}
+function set() {
+  $("#body").innerHTML = `<form id="sf" class="o" style="max-width:480px"><h3>Store settings</h3><label>bKash merchant number<input name="bkash" value="${esc(S.bkash)}" placeholder="01XXXXXXXXX"></label>
+  <label>Nagad merchant number<input name="nagad" value="${esc(S.nagad)}" placeholder="01XXXXXXXXX"></label><label>Delivery charge (৳)<input name="delivery" type="number" min="0" value="${S.delivery}"></label>
+  <label>Contact phone (shown in footer)<input name="phone" value="${esc(S.phone)}"></label><button class="btn sm" style="margin-top:12px">Save settings</button></form>`;
+  $("#sf").onsubmit = async e => { e.preventDefault(); const v = Object.fromEntries(new FormData(e.target)); S = { bkash: v.bkash.trim(), nagad: v.nagad.trim(), delivery: +v.delivery || 0, phone: v.phone.trim() };
+    try { await setDoc(doc(db, "settings", "store"), S); toast("Settings saved."); } catch { toast("Could not save settings."); } };
+}
+</script></body></html>
